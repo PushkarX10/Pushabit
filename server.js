@@ -32,21 +32,72 @@ function getDayOfWeek() {
   return new Date().getDay(); // 0=Sun, 1=Mon...6=Sat
 }
 
-function createDefaultDB() {
+// ─── Session Management ───
+// Simple in-memory sessions (in production, use Redis or similar)
+const sessions = {};
+
+function createSession(userId) {
+  const sessionId = crypto.randomUUID();
+  sessions[sessionId] = { userId, createdAt: Date.now() };
+  return sessionId;
+}
+
+function getSessionUserId(sessionId) {
+  const session = sessions[sessionId];
+  if (session) return session.userId;
+  return null;
+}
+
+function deleteSession(sessionId) {
+  delete sessions[sessionId];
+}
+
+// Get user from request (via session cookie or header)
+function getUserFromRequest(req, db) {
+  // Check for session in cookie or header
+  const sessionId = req.headers['x-session-id'] || req.cookies?.sessionId;
+  if (!sessionId) return null;
+  
+  const userId = getSessionUserId(sessionId);
+  if (!userId) return null;
+  
+  const user = db.users.find(u => u.id === userId);
+  return user || null;
+}
+
+// Middleware to parse cookies
+app.use((req, res, next) => {
+  const cookieHeader = req.headers.cookie;
+  req.cookies = {};
+  if (cookieHeader) {
+    cookieHeader.split(';').forEach(cookie => {
+      const [name, value] = cookie.trim().split('=');
+      req.cookies[name] = value;
+    });
+  }
+  next();
+});
+
+// ─── Create Default User Data Structure ───
+function createDefaultUserData(name, username, email, password) {
+  const usertag = username.toLowerCase().replace(/\s+/g, '_') + '#' + Math.floor(1000 + Math.random() * 9000);
+  
   return {
-    user: {
-      name: "Ethereal Editor",
-      username: "ethereal",
-      level: 1,
-      xp: 0,
-      xpToNext: 1000,
-      streak: 0,
-      lastActiveDate: null,
-      dailyXpGoal: 4000,
-      dailyXpEarned: 0,
-      totalFocusMinutes: 0,
-      profileImage: null
-    },
+    id: genId(),
+    name,
+    username,
+    usertag,
+    email: email.toLowerCase(),
+    password, // In production, hash this!
+    level: 1,
+    xp: 0,
+    xpToNext: 1000,
+    streak: 0,
+    lastActiveDate: null,
+    dailyXpGoal: 4000,
+    dailyXpEarned: 0,
+    totalFocusMinutes: 0,
+    profileImage: null,
     habits: [
       {
         id: genId(),
@@ -86,7 +137,7 @@ function createDefaultDB() {
       {
         id: genId(),
         title: "4-Hour Focused Work",
-        description: "Complete 4 hours of deep focused work to master the art of concentration. This challenge tests your ability to sustain attention over extended periods.",
+        description: "Complete 4 hours of deep focused work to master the art of concentration.",
         category: "Productivity",
         difficulty: "Advanced",
         xpReward: 400,
@@ -95,23 +146,6 @@ function createDefaultDB() {
           { id: genId(), title: "Complete Morning Focus Session", description: "1 hour of focused work before noon", completed: false },
           { id: genId(), title: "Afternoon Deep Work Block", description: "2 hours of uninterrupted afternoon session", completed: false },
           { id: genId(), title: "Evening Review & Planning", description: "1 hour of focused review and next-day planning", completed: false }
-        ],
-        active: true,
-        completed: false,
-        createdAt: new Date().toISOString()
-      },
-      {
-        id: genId(),
-        title: "Curate Design System",
-        description: "Build a comprehensive personal design system for your creative workflow. Document patterns, create templates, and establish a consistent visual language.",
-        category: "Creative",
-        difficulty: "Intermediate",
-        xpReward: 250,
-        lootReward: null,
-        objectives: [
-          { id: genId(), title: "Define Color Palette", description: "Choose and document a harmonious color system", completed: false },
-          { id: genId(), title: "Create Typography Scale", description: "Establish font sizes, weights, and line heights", completed: false },
-          { id: genId(), title: "Build Component Library", description: "Design reusable UI components", completed: false }
         ],
         active: true,
         completed: false,
@@ -142,50 +176,17 @@ function createDefaultDB() {
     weeklyGrowth: [0, 0, 0, 0, 0, 0, 0],
     lootProgress: 0,
     lootTarget: 4,
-    friends: [
-      {
-        id: genId(),
-        username: "alex_storm",
-        name: "Alex Storm",
-        profileImage: null,
-        level: 7,
-        xp: 850,
-        xpToNext: 2400,
-        streak: 12,
-        totalFocusMinutes: 480,
-        habitsCompleted: 42,
-        questsCompleted: 8,
-        addedAt: new Date().toISOString()
-      },
-      {
-        id: genId(),
-        username: "maya_flow",
-        name: "Maya Flow",
-        profileImage: null,
-        level: 4,
-        xp: 320,
-        xpToNext: 1560,
-        streak: 5,
-        totalFocusMinutes: 210,
-        habitsCompleted: 23,
-        questsCompleted: 3,
-        addedAt: new Date().toISOString()
-      },
-      {
-        id: genId(),
-        username: "kai_zenith",
-        name: "Kai Zenith",
-        profileImage: null,
-        level: 11,
-        xp: 1200,
-        xpToNext: 3600,
-        streak: 30,
-        totalFocusMinutes: 1200,
-        habitsCompleted: 95,
-        questsCompleted: 15,
-        addedAt: new Date().toISOString()
-      }
-    ]
+    friends: [],           // Array of friend user IDs
+    friendRequests: [],    // Incoming friend requests: { id, fromUserId, fromUsertag, fromName, sentAt }
+    sentRequests: [],      // Outgoing friend requests: { id, toUserId, toUsertag, sentAt }
+    createdAt: new Date().toISOString()
+  };
+}
+
+function createDefaultDB() {
+  return {
+    users: [],  // Array of user objects
+    version: 2  // DB schema version
   };
 }
 
@@ -194,28 +195,37 @@ function initDB() {
   if (!fs.existsSync(path.dirname(DB_PATH))) {
     fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
   }
-  if (!readDB()) {
-    writeDB(createDefaultDB());
+  
+  let db = readDB();
+  
+  // Check if DB needs migration (from old single-user to new multi-user)
+  if (!db || !db.users) {
+    // Create fresh multi-user DB
+    db = createDefaultDB();
+    writeDB(db);
   }
-  // Reset daily counters if new day
-  const db = readDB();
+}
+
+// Reset daily counters for a user if it's a new day
+function resetDailyIfNeeded(user) {
   const today = getToday();
-  if (db.user.lastActiveDate !== today) {
-    db.user.dailyXpEarned = 0;
-    db.timer.totalFocusToday = 0;
-    db.timer.remaining = db.timer.duration;
-    db.timer.isRunning = false;
+  if (user.lastActiveDate !== today) {
+    user.dailyXpEarned = 0;
+    user.timer.totalFocusToday = 0;
+    user.timer.remaining = user.timer.duration;
+    user.timer.isRunning = false;
     // Update streak
-    if (db.user.lastActiveDate) {
-      const last = new Date(db.user.lastActiveDate);
+    if (user.lastActiveDate) {
+      const last = new Date(user.lastActiveDate);
       const now = new Date(today);
       const diffDays = Math.round((now - last) / (1000 * 60 * 60 * 24));
       if (diffDays > 1) {
-        db.user.streak = 0; // streak broken
+        user.streak = 0; // streak broken
       }
     }
-    writeDB(db);
+    return true; // Changed
   }
+  return false;
 }
 
 initDB();
@@ -226,63 +236,83 @@ initDB();
 app.post('/api/auth/register', (req, res) => {
   const db = readDB();
   const { name, username, email, password } = req.body;
+  
   if (!name || !username || !email || !password) {
     return res.status(400).json({ error: 'All fields are required.' });
   }
   
-  // Generate a unique usertag (username + random 4-digit number)
-  const usertag = username.toLowerCase().replace(/\s+/g, '_') + '#' + Math.floor(1000 + Math.random() * 9000);
+  const emailLower = email.toLowerCase();
   
-  // Registering overwrites the current local single-user profile cleanly
-  db.user = {
-    ...db.user,
-    name,
-    username,
-    usertag,
-    email,
-    password,
-    level: 1,
-    xp: 0,
-    streak: 0,
-    dailyXpEarned: 0,
-    totalFocusMinutes: 0
-  };
-  // Set session as logged in
-  db.session = { loggedIn: true, loginTime: new Date().toISOString() };
-  // Initialize friend requests array if not exists
-  if (!db.friendRequests) db.friendRequests = [];
-  if (!db.sentRequests) db.sentRequests = [];
+  // Check if email already exists
+  if (db.users.some(u => u.email === emailLower)) {
+    return res.status(400).json({ error: 'An account with this email already exists.' });
+  }
+  
+  // Check if username is taken (check usertag prefix)
+  const usernameLower = username.toLowerCase().replace(/\s+/g, '_');
+  
+  // Create new user
+  const newUser = createDefaultUserData(name, username, email, password);
+  db.users.push(newUser);
   writeDB(db);
-  // Use Buffer for base64 encoding (Node.js compatible)
-  res.json({ message: 'Registration successful', token: Buffer.from(db.user.username).toString('base64'), usertag });
+  
+  // Create session
+  const sessionId = createSession(newUser.id);
+  
+  res.setHeader('Set-Cookie', `sessionId=${sessionId}; Path=/; HttpOnly; SameSite=Strict`);
+  res.json({ 
+    message: 'Registration successful', 
+    sessionId,
+    usertag: newUser.usertag,
+    user: { name: newUser.name, username: newUser.username }
+  });
 });
 
 app.post('/api/auth/login', (req, res) => {
   const db = readDB();
-  const { email, password, identifier } = req.body; 
+  const { email, password, identifier } = req.body;
   
-  // Support both 'email' and 'identifier' fields for flexibility
-  const loginId = email || identifier;
-
-  const isIdentifierValid = db.user && (db.user.username === loginId || db.user.email === loginId);
+  // Support both 'email' and 'identifier' fields
+  const loginId = (email || identifier || '').toLowerCase();
   
-  if (isIdentifierValid && db.user.password === password) {
-    // Set session as logged in
-    db.session = { loggedIn: true, loginTime: new Date().toISOString() };
-    writeDB(db);
-    res.json({ message: 'Login successful', user: { name: db.user.name, username: db.user.username } });
-  } else {
-    res.status(401).json({ error: 'Invalid credentials. If this is your first time, create an account.' });
+  // Find user by email or username
+  const user = db.users.find(u => 
+    u.email === loginId || 
+    u.username.toLowerCase() === loginId ||
+    (u.usertag && u.usertag.toLowerCase() === loginId)
+  );
+  
+  if (!user) {
+    return res.status(401).json({ error: 'No account found with these credentials. Please sign up first.' });
   }
+  
+  if (user.password !== password) {
+    return res.status(401).json({ error: 'Invalid password.' });
+  }
+  
+  // Reset daily counters if needed
+  if (resetDailyIfNeeded(user)) {
+    writeDB(db);
+  }
+  
+  // Create session
+  const sessionId = createSession(user.id);
+  
+  res.setHeader('Set-Cookie', `sessionId=${sessionId}; Path=/; HttpOnly; SameSite=Strict`);
+  res.json({ 
+    message: 'Login successful', 
+    sessionId,
+    user: { name: user.name, username: user.username }
+  });
 });
 
-// Auth check - for login page to verify if already authenticated
-// Uses session tracking via db.session
+// Auth check
 app.get('/api/auth/check', (req, res) => {
   const db = readDB();
-  // Check if user has an active session
-  if (db.session && db.session.loggedIn && db.user && db.user.email) {
-    res.json({ authenticated: true, user: { name: db.user.name, username: db.user.username } });
+  const user = getUserFromRequest(req, db);
+  
+  if (user) {
+    res.json({ authenticated: true, user: { name: user.name, username: user.username } });
   } else {
     res.json({ authenticated: false });
   }
@@ -290,36 +320,58 @@ app.get('/api/auth/check', (req, res) => {
 
 // Logout
 app.post('/api/auth/logout', (req, res) => {
-  const db = readDB();
-  db.session = { loggedIn: false };
-  writeDB(db);
+  const sessionId = req.headers['x-session-id'] || req.cookies?.sessionId;
+  if (sessionId) {
+    deleteSession(sessionId);
+  }
+  res.setHeader('Set-Cookie', 'sessionId=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0');
   res.json({ message: 'Logged out successfully' });
 });
 
-// ─── User ───
-app.get('/api/user', (req, res) => {
+// ─── Auth Middleware for Protected Routes ───
+function requireAuth(req, res, next) {
   const db = readDB();
-  // Exclude password from response for security
-  const { password, ...safeUser } = db.user;
+  const user = getUserFromRequest(req, db);
+  
+  if (!user) {
+    return res.status(401).json({ error: 'Not authenticated' });
+  }
+  
+  req.user = user;
+  req.db = db;
+  next();
+}
+
+// ─── User ───
+app.get('/api/user', requireAuth, (req, res) => {
+  // Exclude password from response
+  const { password, ...safeUser } = req.user;
   res.json(safeUser);
 });
 
-app.put('/api/user', (req, res) => {
-  const db = readDB();
+app.put('/api/user', requireAuth, (req, res) => {
+  const db = req.db;
+  const userIdx = db.users.findIndex(u => u.id === req.user.id);
+  if (userIdx === -1) return res.status(404).json({ error: 'User not found' });
+  
   // Prevent password from being updated via this endpoint
-  const { password, ...updates } = req.body;
-  Object.assign(db.user, updates);
+  const { password, id, email, usertag, ...updates } = req.body;
+  Object.assign(db.users[userIdx], updates);
   writeDB(db);
-  // Exclude password from response
-  const { password: pwd, ...safeUser } = db.user;
+  
+  const { password: pwd, ...safeUser } = db.users[userIdx];
   res.json(safeUser);
+});
+
+// ─── User's Usertag ───
+app.get('/api/user/usertag', requireAuth, (req, res) => {
+  res.json({ usertag: req.user.usertag });
 });
 
 // ─── Habits ───
-app.get('/api/habits', (req, res) => {
-  const db = readDB();
+app.get('/api/habits', requireAuth, (req, res) => {
   const today = getToday();
-  const habits = db.habits.map(h => ({
+  const habits = req.user.habits.map(h => ({
     ...h,
     completedToday: h.completedDates.includes(today),
     currentStreak: calculateStreak(h.completedDates)
@@ -327,8 +379,10 @@ app.get('/api/habits', (req, res) => {
   res.json(habits);
 });
 
-app.post('/api/habits', (req, res) => {
-  const db = readDB();
+app.post('/api/habits', requireAuth, (req, res) => {
+  const db = req.db;
+  const userIdx = db.users.findIndex(u => u.id === req.user.id);
+  
   const habit = {
     id: genId(),
     title: req.body.title,
@@ -340,30 +394,38 @@ app.post('/api/habits', (req, res) => {
     completedDates: [],
     createdAt: new Date().toISOString()
   };
-  db.habits.push(habit);
+  
+  db.users[userIdx].habits.push(habit);
   writeDB(db);
   res.json(habit);
 });
 
-app.put('/api/habits/:id', (req, res) => {
-  const db = readDB();
-  const idx = db.habits.findIndex(h => h.id === req.params.id);
-  if (idx === -1) return res.status(404).json({ error: 'Habit not found' });
-  Object.assign(db.habits[idx], req.body);
+app.put('/api/habits/:id', requireAuth, (req, res) => {
+  const db = req.db;
+  const userIdx = db.users.findIndex(u => u.id === req.user.id);
+  const habitIdx = db.users[userIdx].habits.findIndex(h => h.id === req.params.id);
+  
+  if (habitIdx === -1) return res.status(404).json({ error: 'Habit not found' });
+  
+  Object.assign(db.users[userIdx].habits[habitIdx], req.body);
   writeDB(db);
-  res.json(db.habits[idx]);
+  res.json(db.users[userIdx].habits[habitIdx]);
 });
 
-app.delete('/api/habits/:id', (req, res) => {
-  const db = readDB();
-  db.habits = db.habits.filter(h => h.id !== req.params.id);
+app.delete('/api/habits/:id', requireAuth, (req, res) => {
+  const db = req.db;
+  const userIdx = db.users.findIndex(u => u.id === req.user.id);
+  db.users[userIdx].habits = db.users[userIdx].habits.filter(h => h.id !== req.params.id);
   writeDB(db);
   res.json({ success: true });
 });
 
-app.post('/api/habits/:id/toggle', (req, res) => {
-  const db = readDB();
-  const habit = db.habits.find(h => h.id === req.params.id);
+app.post('/api/habits/:id/toggle', requireAuth, (req, res) => {
+  const db = req.db;
+  const userIdx = db.users.findIndex(u => u.id === req.user.id);
+  const user = db.users[userIdx];
+  const habit = user.habits.find(h => h.id === req.params.id);
+  
   if (!habit) return res.status(404).json({ error: 'Habit not found' });
 
   const today = getToday();
@@ -372,60 +434,63 @@ app.post('/api/habits/:id/toggle', (req, res) => {
   if (idx === -1) {
     // Complete
     habit.completedDates.push(today);
-    db.user.xp += habit.xpReward;
-    db.user.dailyXpEarned += habit.xpReward;
+    user.xp += habit.xpReward;
+    user.dailyXpEarned += habit.xpReward;
     // Track weekly growth
     const dow = getDayOfWeek();
-    db.weeklyGrowth[dow] += habit.xpReward;
+    user.weeklyGrowth[dow] += habit.xpReward;
     // Update streak
-    db.user.lastActiveDate = today;
-    if (db.user.streak === 0) db.user.streak = 1;
+    user.lastActiveDate = today;
+    if (user.streak === 0) user.streak = 1;
     // Tier up every 7 completions
     if (habit.completedDates.length % 7 === 0) {
       habit.tier = Math.min(habit.tier + 1, 5);
     }
     // Level up check
-    while (db.user.xp >= db.user.xpToNext) {
-      db.user.xp -= db.user.xpToNext;
-      db.user.level++;
-      db.user.xpToNext = Math.floor(db.user.xpToNext * 1.25);
+    while (user.xp >= user.xpToNext) {
+      user.xp -= user.xpToNext;
+      user.level++;
+      user.xpToNext = Math.floor(user.xpToNext * 1.25);
       // Unlock inventory item on level up
-      const locked = db.inventory.find(i => !i.unlocked);
+      const locked = user.inventory.find(i => !i.unlocked);
       if (locked) locked.unlocked = true;
     }
     // Update skills based on category
-    updateSkillsFromHabit(db, habit.category);
+    updateSkillsFromHabit(user, habit.category);
   } else {
     // Un-complete
     habit.completedDates.splice(idx, 1);
-    db.user.xp = Math.max(0, db.user.xp - habit.xpReward);
-    db.user.dailyXpEarned = Math.max(0, db.user.dailyXpEarned - habit.xpReward);
+    user.xp = Math.max(0, user.xp - habit.xpReward);
+    user.dailyXpEarned = Math.max(0, user.dailyXpEarned - habit.xpReward);
     const dow = getDayOfWeek();
-    db.weeklyGrowth[dow] = Math.max(0, db.weeklyGrowth[dow] - habit.xpReward);
+    user.weeklyGrowth[dow] = Math.max(0, user.weeklyGrowth[dow] - habit.xpReward);
   }
 
   // Calculate efficiency
-  const totalPossibleXp = db.habits.reduce((sum, h) => sum + h.xpReward, 0);
-  const earnedToday = db.habits.reduce((sum, h) => {
+  const totalPossibleXp = user.habits.reduce((sum, h) => sum + h.xpReward, 0);
+  const earnedToday = user.habits.reduce((sum, h) => {
     return sum + (h.completedDates.includes(today) ? h.xpReward : 0);
   }, 0);
-  db.user.efficiency = totalPossibleXp > 0 ? Math.round((earnedToday / totalPossibleXp) * 100) : 0;
+  user.efficiency = totalPossibleXp > 0 ? Math.round((earnedToday / totalPossibleXp) * 100) : 0;
 
   writeDB(db);
+  
+  const { password, ...safeUser } = user;
   res.json({
     habit: { ...habit, completedToday: habit.completedDates.includes(today), currentStreak: calculateStreak(habit.completedDates) },
-    user: db.user
+    user: safeUser
   });
 });
 
 // ─── Quests ───
-app.get('/api/quests', (req, res) => {
-  const db = readDB();
-  res.json(db.quests);
+app.get('/api/quests', requireAuth, (req, res) => {
+  res.json(req.user.quests);
 });
 
-app.post('/api/quests', (req, res) => {
-  const db = readDB();
+app.post('/api/quests', requireAuth, (req, res) => {
+  const db = req.db;
+  const userIdx = db.users.findIndex(u => u.id === req.user.id);
+  
   const quest = {
     id: genId(),
     title: req.body.title,
@@ -439,28 +504,31 @@ app.post('/api/quests', (req, res) => {
     completed: false,
     createdAt: new Date().toISOString()
   };
-  db.quests.push(quest);
+  
+  db.users[userIdx].quests.push(quest);
   writeDB(db);
   res.json(quest);
 });
 
-app.get('/api/quests/:id', (req, res) => {
-  const db = readDB();
-  const quest = db.quests.find(q => q.id === req.params.id);
+app.get('/api/quests/:id', requireAuth, (req, res) => {
+  const quest = req.user.quests.find(q => q.id === req.params.id);
   if (!quest) return res.status(404).json({ error: 'Quest not found' });
   res.json(quest);
 });
 
-app.delete('/api/quests/:id', (req, res) => {
-  const db = readDB();
-  db.quests = db.quests.filter(q => q.id !== req.params.id);
+app.delete('/api/quests/:id', requireAuth, (req, res) => {
+  const db = req.db;
+  const userIdx = db.users.findIndex(u => u.id === req.user.id);
+  db.users[userIdx].quests = db.users[userIdx].quests.filter(q => q.id !== req.params.id);
   writeDB(db);
   res.json({ success: true });
 });
 
-app.post('/api/quests/:id/objectives/:objId/toggle', (req, res) => {
-  const db = readDB();
-  const quest = db.quests.find(q => q.id === req.params.id);
+app.post('/api/quests/:id/objectives/:objId/toggle', requireAuth, (req, res) => {
+  const db = req.db;
+  const userIdx = db.users.findIndex(u => u.id === req.user.id);
+  const quest = db.users[userIdx].quests.find(q => q.id === req.params.id);
+  
   if (!quest) return res.status(404).json({ error: 'Quest not found' });
 
   const obj = quest.objectives.find(o => o.id === req.params.objId);
@@ -471,146 +539,176 @@ app.post('/api/quests/:id/objectives/:objId/toggle', (req, res) => {
   res.json(quest);
 });
 
-app.post('/api/quests/:id/complete', (req, res) => {
-  const db = readDB();
-  const quest = db.quests.find(q => q.id === req.params.id);
+app.post('/api/quests/:id/complete', requireAuth, (req, res) => {
+  const db = req.db;
+  const userIdx = db.users.findIndex(u => u.id === req.user.id);
+  const user = db.users[userIdx];
+  const quest = user.quests.find(q => q.id === req.params.id);
+  
   if (!quest) return res.status(404).json({ error: 'Quest not found' });
 
   quest.completed = true;
   quest.active = false;
-  db.user.xp += quest.xpReward;
-  db.user.dailyXpEarned += quest.xpReward;
+  user.xp += quest.xpReward;
+  user.dailyXpEarned += quest.xpReward;
 
   const dow = getDayOfWeek();
-  db.weeklyGrowth[dow] += quest.xpReward;
-  db.user.lastActiveDate = getToday();
+  user.weeklyGrowth[dow] += quest.xpReward;
+  user.lastActiveDate = getToday();
 
   // Level up check
-  while (db.user.xp >= db.user.xpToNext) {
-    db.user.xp -= db.user.xpToNext;
-    db.user.level++;
-    db.user.xpToNext = Math.floor(db.user.xpToNext * 1.25);
-    const locked = db.inventory.find(i => !i.unlocked);
+  while (user.xp >= user.xpToNext) {
+    user.xp -= user.xpToNext;
+    user.level++;
+    user.xpToNext = Math.floor(user.xpToNext * 1.25);
+    const locked = user.inventory.find(i => !i.unlocked);
     if (locked) locked.unlocked = true;
   }
 
   writeDB(db);
-  res.json({ quest, user: db.user });
+  
+  const { password, ...safeUser } = user;
+  res.json({ quest, user: safeUser });
 });
 
 // ─── Skills ───
-app.get('/api/skills', (req, res) => {
-  const db = readDB();
-  res.json(db.skills);
+app.get('/api/skills', requireAuth, (req, res) => {
+  res.json(req.user.skills);
 });
 
-app.post('/api/skills/evolve', (req, res) => {
-  const db = readDB();
+app.post('/api/skills/evolve', requireAuth, (req, res) => {
+  const db = req.db;
+  const userIdx = db.users.findIndex(u => u.id === req.user.id);
+  const user = db.users[userIdx];
+  
   const cost = 500;
-  if (db.user.xp < cost) return res.status(400).json({ error: 'Not enough XP' });
+  if (user.xp < cost) return res.status(400).json({ error: 'Not enough XP' });
 
-  db.user.xp -= cost;
-  const { skill } = req.body; // which skill to boost
-  if (db.skills[skill] !== undefined) {
-    db.skills[skill] = Math.min(100, db.skills[skill] + 10);
+  user.xp -= cost;
+  const { skill } = req.body;
+  if (user.skills[skill] !== undefined) {
+    user.skills[skill] = Math.min(100, user.skills[skill] + 10);
   }
   writeDB(db);
-  res.json({ skills: db.skills, user: db.user });
+  
+  const { password, ...safeUser } = user;
+  res.json({ skills: user.skills, user: safeUser });
 });
 
 // ─── Timer ───
-app.get('/api/timer', (req, res) => {
-  const db = readDB();
-  res.json(db.timer);
+app.get('/api/timer', requireAuth, (req, res) => {
+  res.json(req.user.timer);
 });
 
-app.put('/api/timer', (req, res) => {
-  const db = readDB();
-  Object.assign(db.timer, req.body);
+app.put('/api/timer', requireAuth, (req, res) => {
+  const db = req.db;
+  const userIdx = db.users.findIndex(u => u.id === req.user.id);
+  Object.assign(db.users[userIdx].timer, req.body);
   writeDB(db);
-  res.json(db.timer);
+  res.json(db.users[userIdx].timer);
 });
 
-app.post('/api/timer/complete', (req, res) => {
-  const db = readDB();
-  const minutesCompleted = Math.round(db.timer.duration / 60);
-  db.timer.totalFocusToday += minutesCompleted;
-  db.user.totalFocusMinutes += minutesCompleted;
-  db.timer.remaining = db.timer.duration;
-  db.timer.isRunning = false;
+app.post('/api/timer/complete', requireAuth, (req, res) => {
+  const db = req.db;
+  const userIdx = db.users.findIndex(u => u.id === req.user.id);
+  const user = db.users[userIdx];
+  
+  const minutesCompleted = Math.round(user.timer.duration / 60);
+  user.timer.totalFocusToday += minutesCompleted;
+  user.totalFocusMinutes += minutesCompleted;
+  user.timer.remaining = user.timer.duration;
+  user.timer.isRunning = false;
 
   // Award XP for focus session
   const xpEarned = minutesCompleted * 4;
-  db.user.xp += xpEarned;
-  db.user.dailyXpEarned += xpEarned;
-  db.user.lastActiveDate = getToday();
+  user.xp += xpEarned;
+  user.dailyXpEarned += xpEarned;
+  user.lastActiveDate = getToday();
 
   const dow = getDayOfWeek();
-  db.weeklyGrowth[dow] += xpEarned;
+  user.weeklyGrowth[dow] += xpEarned;
 
-  // Loot progress (based on hours)
-  db.lootProgress = Math.min(db.lootTarget, db.timer.totalFocusToday / 60);
-  if (db.lootProgress >= db.lootTarget) {
-    const locked = db.inventory.find(i => !i.unlocked);
+  // Loot progress
+  user.lootProgress = Math.min(user.lootTarget, user.timer.totalFocusToday / 60);
+  if (user.lootProgress >= user.lootTarget) {
+    const locked = user.inventory.find(i => !i.unlocked);
     if (locked) locked.unlocked = true;
-    db.lootProgress = 0;
+    user.lootProgress = 0;
   }
 
   // Level up
-  while (db.user.xp >= db.user.xpToNext) {
-    db.user.xp -= db.user.xpToNext;
-    db.user.level++;
-    db.user.xpToNext = Math.floor(db.user.xpToNext * 1.25);
+  while (user.xp >= user.xpToNext) {
+    user.xp -= user.xpToNext;
+    user.level++;
+    user.xpToNext = Math.floor(user.xpToNext * 1.25);
   }
 
   // Update skills
-  db.skills.focusClarity = Math.min(100, db.skills.focusClarity + 2);
-  db.skills.stability = Math.min(100, db.skills.stability + 1);
+  user.skills.focusClarity = Math.min(100, user.skills.focusClarity + 2);
+  user.skills.stability = Math.min(100, user.skills.stability + 1);
 
   writeDB(db);
-  res.json({ timer: db.timer, user: db.user, xpEarned });
+  
+  const { password, ...safeUser } = user;
+  res.json({ timer: user.timer, user: safeUser, xpEarned });
 });
 
 // ─── Profile Image Upload ───
-app.post('/api/user/avatar', (req, res) => {
-  const db = readDB();
-  const { image } = req.body; // base64 data URI
+app.post('/api/user/avatar', requireAuth, (req, res) => {
+  const db = req.db;
+  const userIdx = db.users.findIndex(u => u.id === req.user.id);
+  const { image } = req.body;
+  
   if (!image) return res.status(400).json({ error: 'No image provided' });
-  db.user.profileImage = image;
+  
+  db.users[userIdx].profileImage = image;
   writeDB(db);
-  res.json({ profileImage: db.user.profileImage });
+  res.json({ profileImage: db.users[userIdx].profileImage });
 });
 
-app.delete('/api/user/avatar', (req, res) => {
-  const db = readDB();
-  db.user.profileImage = null;
+app.delete('/api/user/avatar', requireAuth, (req, res) => {
+  const db = req.db;
+  const userIdx = db.users.findIndex(u => u.id === req.user.id);
+  db.users[userIdx].profileImage = null;
   writeDB(db);
   res.json({ success: true });
 });
 
 // ─── Friends ───
-app.get('/api/friends', (req, res) => {
-  const db = readDB();
-  res.json(db.friends || []);
-});
 
-// Get current user's usertag
-app.get('/api/user/usertag', (req, res) => {
-  const db = readDB();
-  if (db.user && db.user.usertag) {
-    res.json({ usertag: db.user.usertag });
-  } else {
-    // Generate usertag if not exists
-    const usertag = (db.user.username || 'user').toLowerCase().replace(/\s+/g, '_') + '#' + Math.floor(1000 + Math.random() * 9000);
-    db.user.usertag = usertag;
-    writeDB(db);
-    res.json({ usertag });
-  }
+// Get friends list with their current data
+app.get('/api/friends', requireAuth, (req, res) => {
+  const db = req.db;
+  const friendIds = req.user.friends || [];
+  
+  // Get actual friend data from users collection
+  const friendsData = friendIds.map(friendId => {
+    const friend = db.users.find(u => u.id === friendId);
+    if (!friend) return null;
+    
+    // Return safe public data
+    return {
+      id: friend.id,
+      username: friend.username,
+      usertag: friend.usertag,
+      name: friend.name,
+      profileImage: friend.profileImage,
+      level: friend.level,
+      xp: friend.xp,
+      xpToNext: friend.xpToNext,
+      streak: friend.streak,
+      totalFocusMinutes: friend.totalFocusMinutes,
+      habitsCompleted: friend.habits.filter(h => h.completedDates.length > 0).length,
+      questsCompleted: friend.quests.filter(q => q.completed).length
+    };
+  }).filter(Boolean);
+  
+  res.json(friendsData);
 });
 
 // Send friend request by usertag
-app.post('/api/friends/request', (req, res) => {
-  const db = readDB();
+app.post('/api/friends/request', requireAuth, (req, res) => {
+  const db = req.db;
   const { usertag } = req.body;
   
   if (!usertag || !usertag.trim()) {
@@ -620,221 +718,328 @@ app.post('/api/friends/request', (req, res) => {
   const cleanUsertag = usertag.trim().toLowerCase();
   
   // Check if it's own usertag
-  if (db.user.usertag && db.user.usertag.toLowerCase() === cleanUsertag) {
+  if (req.user.usertag.toLowerCase() === cleanUsertag) {
     return res.status(400).json({ error: "You can't send a friend request to yourself" });
   }
   
-  // Initialize arrays if needed
-  if (!db.friendRequests) db.friendRequests = [];
-  if (!db.sentRequests) db.sentRequests = [];
-  
-  // Check if already sent a request
-  if (db.sentRequests.some(r => r.usertag.toLowerCase() === cleanUsertag)) {
-    return res.status(400).json({ error: 'Friend request already sent to this user' });
+  // Find target user by usertag
+  const targetUser = db.users.find(u => u.usertag.toLowerCase() === cleanUsertag);
+  if (!targetUser) {
+    return res.status(404).json({ error: 'User not found. Make sure the usertag is correct (e.g., username#1234)' });
   }
   
   // Check if already friends
-  if ((db.friends || []).some(f => f.usertag && f.usertag.toLowerCase() === cleanUsertag)) {
+  if ((req.user.friends || []).includes(targetUser.id)) {
     return res.status(400).json({ error: 'This user is already your friend' });
   }
   
-  // Add to sent requests (in a real app, this would go to the other user's DB)
-  const request = {
-    id: genId(),
-    usertag: cleanUsertag,
-    sentAt: new Date().toISOString(),
-    status: 'pending'
-  };
-  db.sentRequests.push(request);
-  writeDB(db);
+  // Check if request already sent
+  const userIdx = db.users.findIndex(u => u.id === req.user.id);
+  if (!db.users[userIdx].sentRequests) db.users[userIdx].sentRequests = [];
   
-  res.json({ message: 'Friend request sent!', request });
+  if (db.users[userIdx].sentRequests.some(r => r.toUserId === targetUser.id)) {
+    return res.status(400).json({ error: 'Friend request already sent to this user' });
+  }
+  
+  // Check if there's a pending request FROM this user to us (auto-accept)
+  const targetIdx = db.users.findIndex(u => u.id === targetUser.id);
+  if (!db.users[targetIdx].sentRequests) db.users[targetIdx].sentRequests = [];
+  
+  const incomingRequest = db.users[targetIdx].sentRequests.find(r => r.toUserId === req.user.id);
+  if (incomingRequest) {
+    // Auto-accept: they sent us a request, we're sending one back
+    // Add each other as friends
+    if (!db.users[userIdx].friends) db.users[userIdx].friends = [];
+    if (!db.users[targetIdx].friends) db.users[targetIdx].friends = [];
+    
+    db.users[userIdx].friends.push(targetUser.id);
+    db.users[targetIdx].friends.push(req.user.id);
+    
+    // Remove the pending requests
+    db.users[targetIdx].sentRequests = db.users[targetIdx].sentRequests.filter(r => r.toUserId !== req.user.id);
+    if (!db.users[userIdx].friendRequests) db.users[userIdx].friendRequests = [];
+    db.users[userIdx].friendRequests = db.users[userIdx].friendRequests.filter(r => r.fromUserId !== targetUser.id);
+    
+    writeDB(db);
+    return res.json({ message: 'You are now friends!', autoAccepted: true });
+  }
+  
+  // Create request
+  const requestId = genId();
+  
+  // Add to sender's sent requests
+  db.users[userIdx].sentRequests.push({
+    id: requestId,
+    toUserId: targetUser.id,
+    toUsertag: targetUser.usertag,
+    sentAt: new Date().toISOString()
+  });
+  
+  // Add to recipient's incoming requests
+  if (!db.users[targetIdx].friendRequests) db.users[targetIdx].friendRequests = [];
+  db.users[targetIdx].friendRequests.push({
+    id: requestId,
+    fromUserId: req.user.id,
+    fromUsertag: req.user.usertag,
+    fromName: req.user.name,
+    sentAt: new Date().toISOString()
+  });
+  
+  writeDB(db);
+  res.json({ message: 'Friend request sent!' });
 });
 
 // Get sent friend requests
-app.get('/api/friends/requests/sent', (req, res) => {
-  const db = readDB();
-  res.json(db.sentRequests || []);
+app.get('/api/friends/requests/sent', requireAuth, (req, res) => {
+  res.json(req.user.sentRequests || []);
 });
 
-// Get received friend requests (simulated - in real app would be from other users)
-app.get('/api/friends/requests/received', (req, res) => {
-  const db = readDB();
-  res.json(db.friendRequests || []);
+// Get received friend requests
+app.get('/api/friends/requests/received', requireAuth, (req, res) => {
+  res.json(req.user.friendRequests || []);
 });
 
 // Accept friend request
-app.post('/api/friends/request/:id/accept', (req, res) => {
-  const db = readDB();
+app.post('/api/friends/request/:id/accept', requireAuth, (req, res) => {
+  const db = req.db;
   const requestId = req.params.id;
+  const userIdx = db.users.findIndex(u => u.id === req.user.id);
   
-  if (!db.friendRequests) db.friendRequests = [];
-  const requestIdx = db.friendRequests.findIndex(r => r.id === requestId);
+  if (!db.users[userIdx].friendRequests) db.users[userIdx].friendRequests = [];
+  const requestIdx = db.users[userIdx].friendRequests.findIndex(r => r.id === requestId);
   
   if (requestIdx === -1) {
     return res.status(404).json({ error: 'Friend request not found' });
   }
   
-  const request = db.friendRequests[requestIdx];
+  const request = db.users[userIdx].friendRequests[requestIdx];
+  const senderIdx = db.users.findIndex(u => u.id === request.fromUserId);
   
-  // Create friend from request
-  const friend = {
-    id: genId(),
-    username: request.username || request.usertag.split('#')[0],
-    usertag: request.usertag,
-    name: request.name || request.username || request.usertag.split('#')[0],
-    profileImage: null,
-    level: 1,
-    xp: 0,
-    xpToNext: 1000,
-    streak: 0,
-    totalFocusMinutes: 0,
-    habitsCompleted: 0,
-    questsCompleted: 0,
-    addedAt: new Date().toISOString()
-  };
+  if (senderIdx === -1) {
+    // Sender no longer exists, just remove the request
+    db.users[userIdx].friendRequests.splice(requestIdx, 1);
+    writeDB(db);
+    return res.status(404).json({ error: 'The user who sent this request no longer exists' });
+  }
   
-  if (!db.friends) db.friends = [];
-  db.friends.push(friend);
+  // Add each other as friends
+  if (!db.users[userIdx].friends) db.users[userIdx].friends = [];
+  if (!db.users[senderIdx].friends) db.users[senderIdx].friends = [];
   
-  // Remove from pending requests
-  db.friendRequests.splice(requestIdx, 1);
+  if (!db.users[userIdx].friends.includes(request.fromUserId)) {
+    db.users[userIdx].friends.push(request.fromUserId);
+  }
+  if (!db.users[senderIdx].friends.includes(req.user.id)) {
+    db.users[senderIdx].friends.push(req.user.id);
+  }
+  
+  // Remove the request from recipient
+  db.users[userIdx].friendRequests.splice(requestIdx, 1);
+  
+  // Remove from sender's sent requests
+  if (db.users[senderIdx].sentRequests) {
+    db.users[senderIdx].sentRequests = db.users[senderIdx].sentRequests.filter(r => r.id !== requestId);
+  }
+  
   writeDB(db);
+  
+  // Return friend data
+  const sender = db.users[senderIdx];
+  const friend = {
+    id: sender.id,
+    username: sender.username,
+    usertag: sender.usertag,
+    name: sender.name,
+    profileImage: sender.profileImage,
+    level: sender.level,
+    xp: sender.xp,
+    xpToNext: sender.xpToNext,
+    streak: sender.streak,
+    totalFocusMinutes: sender.totalFocusMinutes,
+    habitsCompleted: sender.habits.filter(h => h.completedDates.length > 0).length,
+    questsCompleted: sender.quests.filter(q => q.completed).length
+  };
   
   res.json({ message: 'Friend request accepted!', friend });
 });
 
 // Decline friend request
-app.post('/api/friends/request/:id/decline', (req, res) => {
-  const db = readDB();
+app.post('/api/friends/request/:id/decline', requireAuth, (req, res) => {
+  const db = req.db;
   const requestId = req.params.id;
+  const userIdx = db.users.findIndex(u => u.id === req.user.id);
   
-  if (!db.friendRequests) db.friendRequests = [];
-  db.friendRequests = db.friendRequests.filter(r => r.id !== requestId);
+  if (!db.users[userIdx].friendRequests) db.users[userIdx].friendRequests = [];
+  
+  const request = db.users[userIdx].friendRequests.find(r => r.id === requestId);
+  if (request) {
+    // Remove from sender's sent requests too
+    const senderIdx = db.users.findIndex(u => u.id === request.fromUserId);
+    if (senderIdx !== -1 && db.users[senderIdx].sentRequests) {
+      db.users[senderIdx].sentRequests = db.users[senderIdx].sentRequests.filter(r => r.id !== requestId);
+    }
+  }
+  
+  db.users[userIdx].friendRequests = db.users[userIdx].friendRequests.filter(r => r.id !== requestId);
   writeDB(db);
   
   res.json({ message: 'Friend request declined' });
 });
 
 // Cancel sent friend request
-app.delete('/api/friends/request/:id', (req, res) => {
-  const db = readDB();
+app.delete('/api/friends/request/:id', requireAuth, (req, res) => {
+  const db = req.db;
   const requestId = req.params.id;
+  const userIdx = db.users.findIndex(u => u.id === req.user.id);
   
-  if (!db.sentRequests) db.sentRequests = [];
-  db.sentRequests = db.sentRequests.filter(r => r.id !== requestId);
+  if (!db.users[userIdx].sentRequests) db.users[userIdx].sentRequests = [];
+  
+  const request = db.users[userIdx].sentRequests.find(r => r.id === requestId);
+  if (request) {
+    // Remove from recipient's friend requests too
+    const recipientIdx = db.users.findIndex(u => u.id === request.toUserId);
+    if (recipientIdx !== -1 && db.users[recipientIdx].friendRequests) {
+      db.users[recipientIdx].friendRequests = db.users[recipientIdx].friendRequests.filter(r => r.id !== requestId);
+    }
+  }
+  
+  db.users[userIdx].sentRequests = db.users[userIdx].sentRequests.filter(r => r.id !== requestId);
   writeDB(db);
   
   res.json({ message: 'Friend request cancelled' });
 });
 
-app.post('/api/friends/add', (req, res) => {
-  const db = readDB();
-  const { username, name, usertag } = req.body;
+// Get friend by ID
+app.get('/api/friends/:id', requireAuth, (req, res) => {
+  const db = req.db;
+  const friendId = req.params.id;
   
-  // Support adding by usertag or username
-  const identifier = usertag || username;
-  if (!identifier || !identifier.trim()) {
-    return res.status(400).json({ error: 'Username or usertag is required' });
+  // Check if actually friends
+  if (!(req.user.friends || []).includes(friendId)) {
+    return res.status(404).json({ error: 'Friend not found' });
   }
   
-  const cleanIdentifier = identifier.trim().toLowerCase();
-  const isUsertag = cleanIdentifier.includes('#');
-  
-  // Check if already friends
-  if ((db.friends || []).some(f => {
-    if (isUsertag && f.usertag) {
-      return f.usertag.toLowerCase() === cleanIdentifier;
-    }
-    return f.username.toLowerCase() === cleanIdentifier.replace(/\s+/g, '_');
-  })) {
-    return res.status(400).json({ error: 'Already in your friends list' });
-  }
-  
-  // Check if adding self
-  if (isUsertag && db.user.usertag && db.user.usertag.toLowerCase() === cleanIdentifier) {
-    return res.status(400).json({ error: "You can't add yourself" });
-  }
-  if (!isUsertag && cleanIdentifier === (db.user.username || '').toLowerCase()) {
-    return res.status(400).json({ error: "You can't add yourself" });
-  }
-  
-  const cleanUsername = isUsertag ? cleanIdentifier.split('#')[0] : cleanIdentifier.replace(/\s+/g, '_');
-  
-  const friend = {
-    id: genId(),
-    username: cleanUsername,
-    usertag: isUsertag ? cleanIdentifier : cleanUsername + '#' + Math.floor(1000 + Math.random() * 9000),
-    name: name || cleanUsername,
-    profileImage: null,
-    level: 1,
-    xp: 0,
-    xpToNext: 1000,
-    streak: 0,
-    totalFocusMinutes: 0,
-    habitsCompleted: 0,
-    questsCompleted: 0,
-    addedAt: new Date().toISOString()
-  };
-  
-  if (!db.friends) db.friends = [];
-  db.friends.push(friend);
-  writeDB(db);
-  res.json(friend);
-});
-
-app.get('/api/friends/:id', (req, res) => {
-  const db = readDB();
-  const friend = (db.friends || []).find(f => f.id === req.params.id);
+  const friend = db.users.find(u => u.id === friendId);
   if (!friend) return res.status(404).json({ error: 'Friend not found' });
-  res.json(friend);
+  
+  res.json({
+    id: friend.id,
+    username: friend.username,
+    usertag: friend.usertag,
+    name: friend.name,
+    profileImage: friend.profileImage,
+    level: friend.level,
+    xp: friend.xp,
+    xpToNext: friend.xpToNext,
+    streak: friend.streak,
+    totalFocusMinutes: friend.totalFocusMinutes,
+    habitsCompleted: friend.habits.filter(h => h.completedDates.length > 0).length,
+    questsCompleted: friend.quests.filter(q => q.completed).length
+  });
 });
 
-app.delete('/api/friends/:id', (req, res) => {
-  const db = readDB();
-  db.friends = (db.friends || []).filter(f => f.id !== req.params.id);
+// Remove friend
+app.delete('/api/friends/:id', requireAuth, (req, res) => {
+  const db = req.db;
+  const friendId = req.params.id;
+  const userIdx = db.users.findIndex(u => u.id === req.user.id);
+  const friendIdx = db.users.findIndex(u => u.id === friendId);
+  
+  // Remove from user's friends
+  db.users[userIdx].friends = (db.users[userIdx].friends || []).filter(id => id !== friendId);
+  
+  // Remove from friend's friends too (mutual unfriend)
+  if (friendIdx !== -1) {
+    db.users[friendIdx].friends = (db.users[friendIdx].friends || []).filter(id => id !== req.user.id);
+  }
+  
   writeDB(db);
   res.json({ success: true });
 });
 
 // ─── Inventory ───
-app.get('/api/inventory', (req, res) => {
-  const db = readDB();
-  res.json({ items: db.inventory, lootProgress: db.lootProgress, lootTarget: db.lootTarget });
+app.get('/api/inventory', requireAuth, (req, res) => {
+  res.json({ 
+    items: req.user.inventory, 
+    lootProgress: req.user.lootProgress, 
+    lootTarget: req.user.lootTarget 
+  });
 });
 
 // ─── Stats (Weekly Growth) ───
-app.get('/api/stats/weekly', (req, res) => {
-  const db = readDB();
-  res.json(db.weeklyGrowth);
+app.get('/api/stats/weekly', requireAuth, (req, res) => {
+  res.json(req.user.weeklyGrowth);
 });
 
 // ─── Full State (for initial load) ───
-app.get('/api/state', (req, res) => {
-  const db = readDB();
+app.get('/api/state', requireAuth, (req, res) => {
+  const db = req.db;
+  const user = req.user;
   const today = getToday();
-  const habits = db.habits.map(h => ({
+  
+  const habits = user.habits.map(h => ({
     ...h,
     completedToday: h.completedDates.includes(today),
     currentStreak: calculateStreak(h.completedDates)
   }));
+  
+  // Get friends data
+  const friendIds = user.friends || [];
+  const friendsData = friendIds.map(friendId => {
+    const friend = db.users.find(u => u.id === friendId);
+    if (!friend) return null;
+    return {
+      id: friend.id,
+      username: friend.username,
+      usertag: friend.usertag,
+      name: friend.name,
+      profileImage: friend.profileImage,
+      level: friend.level,
+      xp: friend.xp,
+      xpToNext: friend.xpToNext,
+      streak: friend.streak,
+      totalFocusMinutes: friend.totalFocusMinutes,
+      habitsCompleted: friend.habits.filter(h => h.completedDates.length > 0).length,
+      questsCompleted: friend.quests.filter(q => q.completed).length
+    };
+  }).filter(Boolean);
+  
+  const { password, ...safeUser } = user;
+  
   res.json({
-    user: db.user,
+    user: safeUser,
     habits,
-    quests: db.quests,
-    skills: db.skills,
-    timer: db.timer,
-    inventory: db.inventory,
-    weeklyGrowth: db.weeklyGrowth,
-    lootProgress: db.lootProgress,
-    lootTarget: db.lootTarget,
-    friends: db.friends || []
+    quests: user.quests,
+    skills: user.skills,
+    timer: user.timer,
+    inventory: user.inventory,
+    weeklyGrowth: user.weeklyGrowth,
+    lootProgress: user.lootProgress,
+    lootTarget: user.lootTarget,
+    friends: friendsData
   });
 });
 
-// ─── Reset ───
-app.post('/api/reset', (req, res) => {
-  writeDB(createDefaultDB());
+// ─── Reset (resets current user's data only) ───
+app.post('/api/reset', requireAuth, (req, res) => {
+  const db = req.db;
+  const userIdx = db.users.findIndex(u => u.id === req.user.id);
+  
+  // Create fresh user data but keep auth info
+  const newUserData = createDefaultUserData(
+    req.user.name,
+    req.user.username,
+    req.user.email,
+    req.user.password
+  );
+  
+  // Keep the same ID and usertag
+  newUserData.id = req.user.id;
+  newUserData.usertag = req.user.usertag;
+  
+  db.users[userIdx] = newUserData;
+  writeDB(db);
+  
   res.json({ success: true });
 });
 
@@ -865,36 +1070,24 @@ function calculateStreak(dates) {
   return streak;
 }
 
-function updateSkillsFromHabit(db, category) {
+function updateSkillsFromHabit(user, category) {
   switch (category) {
     case 'mental':
-      db.skills.focusClarity = Math.min(100, db.skills.focusClarity + 3);
-      db.skills.intuition = Math.min(100, db.skills.intuition + 1);
+      user.skills.focusClarity = Math.min(100, user.skills.focusClarity + 3);
+      user.skills.intuition = Math.min(100, user.skills.intuition + 1);
       break;
     case 'physical':
-      db.skills.agility = Math.min(100, db.skills.agility + 3);
-      db.skills.stability = Math.min(100, db.skills.stability + 2);
+      user.skills.agility = Math.min(100, user.skills.agility + 3);
+      user.skills.stability = Math.min(100, user.skills.stability + 2);
       break;
     case 'creative':
-      db.skills.intuition = Math.min(100, db.skills.intuition + 3);
-      db.skills.agility = Math.min(100, db.skills.agility + 1);
+      user.skills.intuition = Math.min(100, user.skills.intuition + 3);
+      user.skills.agility = Math.min(100, user.skills.agility + 1);
       break;
     case 'social':
-      db.skills.stability = Math.min(100, db.skills.stability + 3);
-      db.skills.focusClarity = Math.min(100, db.skills.focusClarity + 1);
+      user.skills.stability = Math.min(100, user.skills.stability + 3);
+      user.skills.focusClarity = Math.min(100, user.skills.focusClarity + 1);
       break;
-  }
-}
-
-// ─── Streak updater (called at end of day logic) ───
-function updateStreak(db) {
-  const today = getToday();
-  const completedAny = db.habits.some(h => h.completedDates.includes(today));
-  if (completedAny) {
-    if (db.user.lastActiveDate !== today) {
-      db.user.streak++;
-      db.user.lastActiveDate = today;
-    }
   }
 }
 
@@ -904,5 +1097,5 @@ app.get('*', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`\n  ✨ AURA Habit Tracker running at http://localhost:${PORT}\n`);
+  console.log(`\n  AURA Habit Tracker running at http://localhost:${PORT}\n`);
 });

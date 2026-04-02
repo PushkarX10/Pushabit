@@ -44,7 +44,16 @@ async function init() {
 // ─── Auth Check ───
 async function checkAuth() {
   try {
-    const res = await fetch('/api/auth/check');
+    const sessionId = getSessionId();
+    const headers = {};
+    if (sessionId) {
+      headers['X-Session-Id'] = sessionId;
+    }
+    
+    const res = await fetch('/api/auth/check', {
+      headers,
+      credentials: 'include'
+    });
     if (res.ok) {
       const data = await res.json();
       return data.authenticated;
@@ -159,8 +168,34 @@ function closeModal() {
 }
 
 // ─── API Helpers ───
+// Session ID is stored in localStorage for API requests
+function getSessionId() {
+  return localStorage.getItem('aura_session_id');
+}
+
+function setSessionId(sessionId) {
+  if (sessionId) {
+    localStorage.setItem('aura_session_id', sessionId);
+  } else {
+    localStorage.removeItem('aura_session_id');
+  }
+}
+
 async function api(path, method = 'GET', body = null) {
-  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  const opts = { 
+    method, 
+    headers: { 
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include' // Include cookies
+  };
+  
+  // Add session ID header if available
+  const sessionId = getSessionId();
+  if (sessionId) {
+    opts.headers['X-Session-Id'] = sessionId;
+  }
+  
   if (body) opts.body = JSON.stringify(body);
   const res = await fetch(path, opts);
   return res.json();
@@ -1321,6 +1356,8 @@ async function logout() {
   } catch (e) {
     // Ignore errors
   }
+  // Clear session from localStorage
+  setSessionId(null);
   window.location.href = '/login.html';
 }
 

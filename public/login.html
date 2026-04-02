@@ -658,13 +658,19 @@
         const response = await fetch('/api/auth/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, password, remember })
+          body: JSON.stringify({ email, password, remember }),
+          credentials: 'include'
         });
 
         const data = await response.json();
 
         if (!response.ok) {
           throw new Error(data.error || 'Login failed');
+        }
+
+        // Store session ID in localStorage
+        if (data.sessionId) {
+          localStorage.setItem('aura_session_id', data.sessionId);
         }
 
         // Success - redirect to main app
@@ -699,7 +705,16 @@
     // Check if already logged in
     (async function checkAuth() {
       try {
-        const res = await fetch('/api/auth/check');
+        const sessionId = localStorage.getItem('aura_session_id');
+        const headers = {};
+        if (sessionId) {
+          headers['X-Session-Id'] = sessionId;
+        }
+        
+        const res = await fetch('/api/auth/check', { 
+          headers,
+          credentials: 'include'
+        });
         if (res.ok) {
           const data = await res.json();
           if (data.authenticated) {
