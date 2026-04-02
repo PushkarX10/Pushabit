@@ -1,0 +1,13 @@
+{
+  "name": "aura-habit-tracker",
+  "version": "1.0.0",
+  "description": "AURA — A gamified habit tracker with RPG mechanics",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0"
+  }
+}

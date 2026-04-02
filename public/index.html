@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta content="width=device-width, initial-scale=1.0, viewport-fit=cover" name="viewport"/>
+  <title>AURA — Gamified Habit Tracker</title>
+  <meta name="description" content="AURA: Master your habits with a gamified RPG experience. Track habits, complete quests, grow your skill tree."/>
+  <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@100..900&family=Space+Grotesk:wght@700&display=swap" rel="stylesheet"/>
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            "surface-dim": "#d3dbe2",
+            "primary-container": "#e4dfff",
+            "surface-container-lowest": "#ffffff",
+            "outline": "#757c81",
+            "outline-variant": "#acb3b8",
+            "tertiary": "#585e78",
+            "surface-bright": "#f9f9fb",
+            "on-background": "#2d3338",
+            "primary": "#777491",
+            "surface-container": "#ebeef2",
+            "secondary": "#605f5f",
+            "surface-container-high": "#e4e9ee",
+            "on-surface-variant": "#596065",
+            "primary-dim": "#524f6b",
+            "inverse-surface": "#0c0e10",
+            "surface-container-low": "#f2f4f6",
+            "inverse-on-surface": "#9c9d9f",
+            "inverse-primary": "#d8d3f4",
+            "surface-container-highest": "#dde3e9",
+            "surface-variant": "#dde3e9",
+            "error": "#9e3f4e",
+            "background": "#f9f9fb",
+            "surface-tint": "#5e5b77",
+            "on-primary": "#faf6ff",
+            "surface": "#f9f9fb",
+            "error-container": "#ff8b9a",
+            "on-surface": "#2d3338"
+          },
+          fontFamily: { "headline": ["Inter"], "body": ["Inter"], "label": ["Inter"] },
+          borderRadius: { "DEFAULT": "0.25rem", "lg": "1rem", "xl": "1.25rem", "full": "9999px" },
+        },
+      },
+    }
+  </script>
+  <link rel="stylesheet" href="/styles.css"/>
+</head>
+<body class="text-on-background bg-surface min-h-screen font-['Inter'] antialiased">
+
+
+
+  <!-- ━━━ Top Header ━━━ -->
+  <header id="top-header" class="fixed top-0 w-full z-50 bg-slate-50/80 backdrop-blur-xl bg-gradient-to-b from-slate-200/50 to-transparent flex justify-between items-center px-6 h-16">
+    <div class="flex items-center gap-3">
+      <img src="/logo.png" alt="Pushabit" class="h-9 w-9 object-contain" id="header-logo"/>
+    </div>
+    <div class="flex items-center gap-4">
+      <div id="focus-badge" class="px-3 py-1 bg-surface-container-low rounded-full flex items-center gap-2 hidden">
+        <span class="w-2 h-2 rounded-full bg-primary animate-pulse"></span>
+        <span class="text-[10px] font-semibold uppercase tracking-widest text-on-surface-variant">Focus Active</span>
+      </div>
+      <button id="btn-profile" onclick="openProfileModal()" class="profile-avatar-btn" title="Profile Settings">
+        <img id="header-avatar" src="" alt="" class="hidden"/>
+        <span id="header-avatar-initials" class="material-symbols-outlined">person</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- ━━━ Main Content ━━━ -->
+  <main id="app" class="pt-24 pb-32 px-4 sm:px-6 max-w-7xl mx-auto">
+    <!-- Views render here -->
+    <div class="flex items-center justify-center h-64">
+      <div class="animate-pulse text-primary text-lg">Loading AURA...</div>
+    </div>
+  </main>
+
+  <!-- ━━━ Bottom Navigation ━━━ -->
+  <nav id="bottom-nav" class="fixed bottom-0 w-full z-50 rounded-t-2xl bg-slate-50/90 backdrop-blur-2xl shadow-[0_-4px_20px_rgba(119,116,145,0.08)]">
+    <div class="flex justify-around items-center w-full px-4 pb-6 pt-3 max-w-lg mx-auto">
+      <a href="#habits" class="nav-item flex flex-col items-center justify-center p-3 transition-colors" data-view="habits">
+        <span class="material-symbols-outlined">event_repeat</span>
+      </a>
+      <a href="#quests" class="nav-item flex flex-col items-center justify-center p-3 transition-colors" data-view="quests">
+        <span class="material-symbols-outlined">flag</span>
+      </a>
+      <a href="#dashboard" class="nav-item flex flex-col items-center justify-center p-3 transition-colors" data-view="dashboard">
+        <span class="material-symbols-outlined">military_tech</span>
+      </a>
+      <a href="#timer" class="nav-item flex flex-col items-center justify-center p-3 transition-colors" data-view="timer">
+        <span class="material-symbols-outlined">center_focus_strong</span>
+      </a>
+      <a href="#friends" class="nav-item flex flex-col items-center justify-center p-3 transition-colors" data-view="friends">
+        <span class="material-symbols-outlined">group</span>
+      </a>
+    </div>
+  </nav>
+
+  <!-- ━━━ Modal Overlay ━━━ -->
+  <div id="modal-overlay" class="fixed inset-0 z-[100] bg-black/40 backdrop-blur-sm hidden items-center justify-center p-4">
+    <div id="modal-content" class="bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[90vh] overflow-y-auto p-6 transform transition-all">
+      <!-- Modal content renders here -->
+    </div>
+  </div>
+
+  <!-- ━━━ Toast Notifications ━━━ -->
+  <div id="toast-container" class="fixed top-20 right-4 z-[200] flex flex-col gap-2"></div>
+
+  <!-- ━━━ FAB Container ━━━ -->
+  <div id="fab-container"></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
