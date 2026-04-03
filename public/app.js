@@ -22,23 +22,40 @@ const $focusBadge = document.getElementById('focus-badge');
 
 // ─── Init ───
 async function init() {
-  // Check if user is authenticated (has email set = registered)
-  const authOk = await checkAuth();
-  if (!authOk) {
-    window.location.href = '/login.html';
-    return;
+  try {
+    // Check if user is authenticated (has email set = registered)
+    const authOk = await checkAuth();
+    if (!authOk) {
+      // Clear stale session data before redirect
+      localStorage.removeItem('aura_session_id');
+      window.location.href = '/login.html';
+      return;
+    }
+    
+    await loadState();
+    setupNav();
+    window.addEventListener('hashchange', handleHashChange);
+    updateHeaderAvatar();
+    // Determine initial view from hash
+    const hash = window.location.hash.replace('#', '');
+    if (['habits', 'quests', 'dashboard', 'timer', 'friends'].includes(hash)) {
+      currentView = hash;
+    }
+    renderView(currentView);
+  } catch (e) {
+    console.error('Init error:', e);
+    // Show error state instead of infinite loading
+    $app.innerHTML = `
+      <div class="flex flex-col items-center justify-center h-64 text-center">
+        <span class="material-symbols-outlined text-5xl text-error mb-4">error</span>
+        <p class="text-lg font-semibold text-on-background mb-2">Failed to load AURA</p>
+        <p class="text-sm text-on-surface-variant mb-4">${e.message || 'An error occurred'}</p>
+        <button onclick="window.location.reload()" class="px-6 py-2 rounded-xl bg-primary text-white font-semibold">
+          Retry
+        </button>
+      </div>
+    `;
   }
-  
-  await loadState();
-  setupNav();
-  window.addEventListener('hashchange', handleHashChange);
-  updateHeaderAvatar();
-  // Determine initial view from hash
-  const hash = window.location.hash.replace('#', '');
-  if (['habits', 'quests', 'dashboard', 'timer', 'friends'].includes(hash)) {
-    currentView = hash;
-  }
-  renderView(currentView);
 }
 
 // ─── Auth Check ───
@@ -58,8 +75,13 @@ async function checkAuth() {
       const data = await res.json();
       return data.authenticated;
     }
+    // Clear invalid session
+    localStorage.removeItem('aura_session_id');
     return false;
   } catch (e) {
+    console.error('Auth check failed:', e);
+    // Clear session on error
+    localStorage.removeItem('aura_session_id');
     return false;
   }
 }
@@ -75,10 +97,25 @@ function handleHashChange() {
 
 async function loadState() {
   try {
-    const res = await fetch('/api/state');
+    const res = await fetch('/api/state', {
+      headers: {
+        'X-Session-Id': getSessionId() || ''
+      },
+      credentials: 'include'
+    });
+    if (!res.ok) {
+      if (res.status === 401) {
+        // Session expired or invalid
+        localStorage.removeItem('aura_session_id');
+        window.location.href = '/login.html';
+        return;
+      }
+      throw new Error('Failed to load state');
+    }
     state = await res.json();
   } catch (e) {
     console.error('Failed to load state', e);
+    throw e; // Re-throw to be caught by init()
   }
 }
 
