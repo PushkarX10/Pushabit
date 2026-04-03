@@ -893,10 +893,12 @@ async function renderFriends() {
   let usertag = state.user.usertag || '';
   let sentRequests = [];
   let receivedRequests = [];
+  let loadError = false;
   
   try {
     if (!usertag) {
       const tagRes = await fetch('/api/user/usertag');
+      if (!tagRes.ok) throw new Error('Failed to fetch usertag');
       const tagData = await tagRes.json();
       usertag = tagData.usertag;
       state.user.usertag = usertag;
@@ -906,10 +908,16 @@ async function renderFriends() {
       fetch('/api/friends/requests/sent'),
       fetch('/api/friends/requests/received')
     ]);
+    
+    if (!sentRes.ok || !receivedRes.ok) {
+      throw new Error('Failed to fetch friend requests');
+    }
+    
     sentRequests = await sentRes.json();
     receivedRequests = await receivedRes.json();
   } catch (e) {
     console.error('Error fetching friend data:', e);
+    loadError = true;
   }
 
   // Sort by level descending
@@ -922,6 +930,22 @@ async function renderFriends() {
         <h2 class="text-3xl font-bold text-on-background">Friends</h2>
         <p class="text-sm text-on-surface-variant mt-2">${friends.length} friend${friends.length !== 1 ? 's' : ''}</p>
       </div>
+
+      ${loadError ? `
+        <!-- Error Banner -->
+        <div class="aura-card p-4 mb-4 bg-error/10 border border-error/20">
+          <div class="flex items-center gap-3">
+            <span class="material-symbols-outlined text-error">error</span>
+            <div class="flex-1">
+              <p class="text-sm font-semibold text-error">Failed to load friend requests</p>
+              <p class="text-xs text-on-surface-variant mt-0.5">Check your connection and try again</p>
+            </div>
+            <button onclick="renderFriends()" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-error/10 text-error hover:bg-error/20 transition-colors">
+              Retry
+            </button>
+          </div>
+        </div>
+      ` : ''}
 
       <!-- Your Card with Usertag -->
       <div class="aura-card gradient-aura p-4 mb-4">
@@ -964,11 +988,11 @@ async function renderFriends() {
             ${receivedRequests.map(req => `
               <div class="aura-card p-3 flex items-center gap-3">
                 <div class="w-10 h-10 rounded-full bg-surface-container-high flex items-center justify-center">
-                  <span class="font-bold text-primary">${getInitials(req.name || req.usertag.split('#')[0])}</span>
+                  <span class="font-bold text-primary">${getInitials(req.fromName || req.fromUsertag.split('#')[0])}</span>
                 </div>
                 <div class="flex-1 min-w-0">
-                  <p class="font-semibold text-sm text-on-background">${req.name || req.usertag.split('#')[0]}</p>
-                  <p class="text-[10px] text-on-surface-variant">${req.usertag}</p>
+                  <p class="font-semibold text-sm text-on-background">${req.fromName || req.fromUsertag.split('#')[0]}</p>
+                  <p class="text-[10px] text-on-surface-variant">${req.fromUsertag}</p>
                 </div>
                 <div class="flex gap-2">
                   <button onclick="acceptFriendRequest('${req.id}')" 
@@ -997,7 +1021,7 @@ async function renderFriends() {
                   <span class="material-symbols-outlined text-on-surface-variant" style="font-size:20px">hourglass_empty</span>
                 </div>
                 <div class="flex-1 min-w-0">
-                  <p class="font-semibold text-sm text-on-background">${req.usertag}</p>
+                  <p class="font-semibold text-sm text-on-background">${req.toUsertag}</p>
                   <p class="text-[10px] text-on-surface-variant">Sent ${formatTimeAgo(req.sentAt)}</p>
                 </div>
                 <button onclick="cancelFriendRequest('${req.id}')"
